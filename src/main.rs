@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use color_eyre::eyre::{Result, eyre};
 use url::Url;
@@ -39,6 +42,12 @@ enum Commands {
     HandleNxm {
         link: String,
     },
+
+    /// Register nmm as the handler for nxm:// protocol links
+    Register,
+
+    /// Unregister nmm as the handler for nxm:// protocol links
+    Unregister,
 }
 
 #[tokio::main]
@@ -56,6 +65,8 @@ async fn main() -> Result<()> {
             file_id,
         } => handle_download(&api, &cache, &game, mod_id, file_id).await,
         Commands::HandleNxm { link } => handle_nxm(&api, &cache, &link).await,
+        Commands::Register => register_handler(),
+        Commands::Unregister => unregister_handler(),
     }
 }
 
@@ -142,4 +153,78 @@ async fn get_default_file(
         ));
     };
     Ok(file.file_id)
+}
+
+#[cfg(target_os = "linux")]
+fn register_handler() -> Result<()> {
+    let desktop_path = desktop_file_path()?;
+
+    let desktop_content = r#"[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Nexus Mods Manager
+Comment=Handle nxm:// protocol links
+Exec=nmm handle-nxm %u
+Terminal=true
+MimeType=x-scheme-handler/nxm;
+"#;
+
+    if let Some(parent) = desktop_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&desktop_path, desktop_content)?;
+
+    let result = std::process::Command::new("xdg-mime")
+        .arg("default")
+        .arg(&desktop_path)
+        .arg("x-scheme-handler/nxm")
+        .output()
+        .map_err(|e| eyre!("failed to run xdg-mime: {}", e))?;
+
+    if result.status.success() {
+        println!("Desktop entry created at: {}", desktop_path.display());
+        Ok(())
+    } else {
+        Err(eyre!("xdg-mime failed to register the handler"))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn unregister_handler() -> Result<()> {
+    let desktop_path = desktop_file_path()?;
+    if !desktop_path.exists() {
+        eprintln!("Desktop entry not found at: {}", desktop_path.display());
+        return Ok(());
+    }
+
+    std::process::Command::new("xdg-mime")
+        .arg("uninstall")
+        .arg(DESKTOP_FILE_NAME)
+        .output()?;
+
+    std::fs::remove_file(&desktop_path)?;
+    Ok(())
+}
+
+const DESKTOP_FILE_NAME: &str = "nmm-nmm.desktop";
+#[cfg(target_os = "linux")]
+fn desktop_file_path() -> Result<PathBuf> {
+    let mut path = dirs::data_dir().ok_or_else(|| eyre!("cannot determine data directory"))?;
+    path.push("applications");
+    path.push(DESKTOP_FILE_NAME);
+    Ok(path)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn register_handler() -> Result<()> {
+    Err(eyre!(
+        "Protocol handler registration is only supported on Linux."
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn unregister_handler() -> Result<()> {
+    Err(eyre!(
+        "Protocol handler registration is only supported on Linux."
+    ))
 }
